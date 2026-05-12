@@ -1,0 +1,29 @@
+Unnamed: 0,Unnamed: 1,Unnamed: 2,Unnamed: 3,Unnamed: 4,Unnamed: 5
+,,,,,
+, ,,,,
+,,,,,
+,#,Rule Description,Validation Logic,Agent Type,Status
+,1,PO Amount > Invoice Amount,Invoice Total ≤ PO Total,🔗 Matching,✅ OK
+,2,Cumulative Invoice ≤ PO,Sum(invoice history for PO) ≤ PO,🔗 Matching,✅ OK
+,3,Vendor Code Present,Vendor Code ≠ NULL,🧾 Screening,✅ OK
+,4,Vendor Name Present,Vendor Name ≠ NULL,🧾 Screening,✅ OK
+,5,Vendor Code ↔ Name Match,Matches Vendor Master,🔗 Matching,✅ OK
+,6,GSTIN Present,GSTIN ≠ NULL,🧾 Screening,✅ OK
+,7,GSTIN Format Valid,15-char format check,🔍 Validation,✅ OK
+,8,GSTIN ↔ Vendor Match,Matches Vendor Master,🔗 Matching,✅ OK
+,9,PO Exists,PO found in PO Master,🔗 Matching,✅ OK
+,10,GRN Exists,GRN found in GRN Master,🔗 Matching,✅ OK
+,11,PO ↔ GRN Link,GRN.PO = Invoice.PO,🔗 Matching,✅ OK
+,12,Invoice Date > PO Date,Invoice Date > PO Date,🔍 Validation,✅ OK
+,13,Invoice Date ≥ GRN Date,Invoice Date ≥ GRN Date,🔍 Validation,✅ OK
+,14,Material Exists in PO,All materials in PO lines,🔗 Matching,✅ OK
+,15,Material Exists in GRN,All materials in GRN lines,🔗 Matching,✅ OK
+,16,Quantity Tolerance Check,Invoice Qty within ±2% of GRN,🔗 Matching,✅ OK
+,17,Rate Match vs PO,Invoice rate ≈ PO rate,🔗 Matching,✅ OK
+,18,Line Amount Accuracy,Qty × Rate = Line Amount,🔍 Validation,✅ OK
+,19,Total Amount Accuracy,Sum(line amounts) = Total,🔍 Validation,✅ OK
+,20,Duplicate Invoice Check,Invoice not in history,🔍 Validation,✅ OK
+,21,Historical Invoice Lookup,Vendor has past invoices,🔗 Matching,✅ OK
+,22,PO Status Check,PO status = OPEN,🔗 Matching,✅ OK
+,23,GRN Qty ≥ Invoice Qty,GRN Qty ≥ Invoice Qty,🔗 Matching,✅ OK
+, ,,,,
