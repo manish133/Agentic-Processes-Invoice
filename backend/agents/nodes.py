@@ -243,7 +243,7 @@ def make_extraction_node(log: Callable[[str], None], on_agent: Optional[Callable
                         "stamp_present": False,
                     }
                 if inv_d.get("ocr_engine_used") == "mock" and inv_d.get("ocr_engine_note"):
-                    log(f"Extraction: GROK fallback for {path.name} -> {inv_d.get('ocr_engine_note')}")
+                    log(f"Extraction: Anthropic fallback for {path.name} -> {inv_d.get('ocr_engine_note')}")
                 out.append(inv_d)
         log(f"Extraction: extracted {len(out)} invoice(s)")
         rep = _build_extraction_report(out)
@@ -279,7 +279,7 @@ def make_screening_node(log: Callable[[str], None], on_agent: Optional[Callable[
                 _exc_to_dict(
                     ExceptionRecord(
                         code="LLM_SCREENING_UNAVAILABLE",
-                        message=f"GROK screening failed: {str(e)}",
+                        message=f"LLM screening failed: {str(e)}",
                         severity=Severity.CRITICAL,
                         field="screening",
                     ),
@@ -289,9 +289,9 @@ def make_screening_node(log: Callable[[str], None], on_agent: Optional[Callable[
             halt = True
 
         if halt:
-            log("Screening: GROK reported blocking issue(s)")
+            log("Screening: Anthropic reported blocking issue(s)")
         else:
-            log("Screening: GROK screening passed")
+            log("Screening: Anthropic screening passed")
         _pause()
         return {
             "exceptions": errs,
@@ -336,12 +336,12 @@ def make_validation_node(log: Callable[[str], None], on_agent: Optional[Callable
                 )
             errs.extend(_exc_to_dict(e, "validation") for e in llm_excs)
         except Exception as e:  # noqa: BLE001
-            # User requested GROK-only validation: fail closed if LLM validation is unavailable.
+            # User requested Anthropic-only validation: fail closed if LLM validation is unavailable.
             errs.append(
                 _exc_to_dict(
                     ExceptionRecord(
                         code="LLM_VALIDATION_UNAVAILABLE",
-                        message=f"GROK validation failed: {str(e)}",
+                        message=f"LLM validation failed: {str(e)}",
                         severity=Severity.CRITICAL,
                         field="validation",
                     ),
@@ -352,7 +352,7 @@ def make_validation_node(log: Callable[[str], None], on_agent: Optional[Callable
         if any(str(e.get("severity", "")).lower() == "critical" for e in errs):
             log("Validation: critical issue(s) detected")
         else:
-            log("Validation: GROK validation completed")
+            log("Validation: Anthropic validation completed")
         _pause()
         return {"exceptions": errs, "stage_outputs": {"validation": validation_report}}
 
@@ -399,23 +399,23 @@ def make_matching_node(log: Callable[[str], None], on_agent: Optional[Callable[[
             rules_compliance["matching_report"] = stage_report
             if state.get("halt_pipeline"):
                 rules_compliance["note"] = (
-                    "Screening raised critical issue(s); matching still evaluated by GROK on available context."
+                    "Screening raised critical issue(s); matching still evaluated by Anthropic on available context."
                 )
-            log("Matching: GROK matching + rules evaluation complete")
+            log("Matching: Anthropic matching + rules evaluation complete")
         except Exception as e:  # noqa: BLE001
             errs.append(
                 _exc_to_dict(
                     ExceptionRecord(
                         code="LLM_MATCHING_UNAVAILABLE",
-                        message=f"GROK matching failed: {str(e)}",
+                        message=f"LLM matching failed: {str(e)}",
                         severity=Severity.CRITICAL,
                         field="matching",
                     ),
                     "matching",
                 )
             )
-            rules_compliance["note"] = "Matching failed because GROK call was unavailable."
-            log("Matching: GROK matching failed")
+            rules_compliance["note"] = "Matching failed because Anthropic call was unavailable."
+            log("Matching: LLM matching failed")
         _pause()
         return {"exceptions": errs, "po_totals": po_totals, "stage_outputs": {"rules_compliance": rules_compliance}}
 
@@ -453,7 +453,7 @@ def make_exception_node(log: Callable[[str], None], on_agent: Optional[Callable[
                 "total_issues": len(all_exc),
                 "critical": critical,
                 "failed_stage": "exception" if critical else None,
-                "note": f"GROK exception summarization unavailable: {str(e)}",
+                "note": f"Anthropic exception summarization unavailable: {str(e)}",
             }
             if critical:
                 failed_agent = "exception"
