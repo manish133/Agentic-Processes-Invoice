@@ -76,24 +76,24 @@ export function UploadPage() {
           <div className="flex items-center gap-3 text-sm text-slate-300">
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={useGrok} onChange={(e) => setUseGrok(e.target.checked)} />
-              Use GROK OCR
+              Use Anthropic OCR (Claude)
             </label>
           </div>
         </div>
         {useGrok && (
           <div>
-            <label className="mb-1 block text-sm text-slate-300">GROK API key (optional per run)</label>
+            <label className="mb-1 block text-sm text-slate-300">Anthropic API key (optional per run)</label>
             <input
               type="password"
               value={grokApiKey}
               onChange={(e) => setGrokApiKey(e.target.value)}
-              placeholder="xai-... or gsk-..."
+              placeholder="sk-ant-..."
               autoComplete="off"
               className="w-full rounded border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500"
             />
             <p className="mt-1 text-xs text-slate-500">
-              Paste your key here, or set server env <code>GROK_API_KEY</code> (xAI) or <code>GROQ_API_KEY</code>{" "}
-              (Groq, <code>gsk_...</code>). Groq keys are auto-routed to api.groq.com.
+              Paste your key here, or set server env <code>ANTHROPIC_API_KEY</code>. Uses Claude{" "}
+              <code>claude-opus-4-7</code> for vision OCR and stage validation.
             </p>
           </div>
         )}
