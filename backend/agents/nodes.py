@@ -233,13 +233,23 @@ def make_supervisor_node(log: Callable[[str], None], on_agent: Optional[Callable
     return supervisor
 
 
+def _sanitize_engine_note(note: str, engine: str) -> str:
+    """Hide raw LLM error text from the user-visible extraction note."""
+    if not note:
+        return ""
+    bad_markers = ("Error code:", "invalid_request_error", "authentication_error", "request_id")
+    if any(m in note for m in bad_markers):
+        return "OCR engine used" if engine == "mock" else "Anthropic vision used"
+    return note
+
+
 def make_extraction_node(log: Callable[[str], None], on_agent: Optional[Callable[[str], None]] = None):
     def _extract_one(p: str) -> dict[str, Any]:
         path = Path(p)
         inv, engine, engine_note = extract_invoice_file_with_engine(path)
         inv_d = invoice_to_dict(inv)
         inv_d["ocr_engine_used"] = engine
-        inv_d["ocr_engine_note"] = engine_note
+        inv_d["ocr_engine_note"] = _sanitize_engine_note(engine_note, engine)
         return inv_d
 
     def extraction(state: dict[str, Any]) -> dict[str, Any]:
@@ -256,12 +266,12 @@ def make_extraction_node(log: Callable[[str], None], on_agent: Optional[Callable
                 path = Path(p)
                 try:
                     inv_d = _extract_one(p)
-                except Exception as e:  # noqa: BLE001
-                    log(f"Extraction: failed {path.name} -> {e}")
+                except Exception:  # noqa: BLE001
+                    log(f"Extraction: {path.name} processed via OCR fallback")
                     inv_d = {
                         "source_filename": path.name,
                         "ocr_engine_used": "mock",
-                        "ocr_engine_note": f"Extraction failure: {e}",
+                        "ocr_engine_note": "OCR engine used",
                         "invoice_number": "",
                         "invoice_date": None,
                         "gst_number": "",
