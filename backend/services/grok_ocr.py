@@ -1,66 +1,91 @@
-"""GROK-backed invoice extraction (best-effort; falls back to mock OCR on failure)."""
+"""
+Anthropic-backed LLM service for invoice extraction and stage evaluation.
+
+Public surface is unchanged from the previous GROK/Groq implementation so
+existing callers (mock_ocr.py, grok_validation.py, main.py) work unchanged:
+
+  - use_grok_api_key(api_key)         per-job key override (context manager)
+  - is_grok_enabled()                 True when an Anthropic API key is configured
+  - get_last_grok_error()             last error message (string)
+  - extract_invoice_with_grok(path)   vision/text OCR -> ExtractedInvoice | None
+  - invoke_llm_json(system_prompt, user_prompt)
+                                      generic JSON-mode LLM call -> dict
+
+Environment:
+  ANTHROPIC_API_KEY   primary key  (fallback: GROK_API_KEY for migration)
+  ANTHROPIC_MODEL     override default model (default: claude-opus-4-7)
+  ANTHROPIC_MAX_TOKENS  output cap (default 8192, max 16000 non-streaming)
+"""
 
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import hashlib
-from pathlib import Path
-from typing import Any
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
+from typing import Any
 
-import httpx
+import anthropic
 import pdfplumber
 
 from models.schemas import ExtractedInvoice, InvoiceItem
 from services.cache_store import cache_get, cache_set
 
-_DEFAULT_BASE_URL = "https://api.x.ai/v1"
-_DEFAULT_MODEL = "grok-4-0709"
-# Groq uses the same /chat/completions shape; default text model for invoice JSON extraction:
-_DEFAULT_GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-_DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
-_CTX_GROK_API_KEY: ContextVar[str] = ContextVar("_CTX_GROK_API_KEY", default="")
-_CTX_GROK_LAST_ERROR: ContextVar[str] = ContextVar("_CTX_GROK_LAST_ERROR", default="")
+_DEFAULT_MODEL = "claude-opus-4-7"
+_DEFAULT_MAX_TOKENS = 8192
+
+_CTX_API_KEY: ContextVar[str] = ContextVar("_CTX_LLM_API_KEY", default="")
+_CTX_LAST_ERROR: ContextVar[str] = ContextVar("_CTX_LLM_LAST_ERROR", default="")
 
 
 def _get_api_key() -> str:
-    ctx = _CTX_GROK_API_KEY.get().strip()
+    ctx = _CTX_API_KEY.get().strip()
     if ctx:
         return ctx
     return (
-        os.getenv("GROK_API_KEY", "").strip()
+        os.getenv("ANTHROPIC_API_KEY", "").strip()
+        or os.getenv("GROK_API_KEY", "").strip()
         or os.getenv("GROQ_API_KEY", "").strip()
     )
 
 
-def _is_groq_key(key: str) -> bool:
-    k = (key or "").strip()
-    return k.startswith("gsk_")
+def _get_model() -> str:
+    return (os.getenv("ANTHROPIC_MODEL") or "").strip() or _DEFAULT_MODEL
+
+
+def _get_max_tokens() -> int:
+    raw = (os.getenv("ANTHROPIC_MAX_TOKENS") or "").strip()
+    try:
+        v = int(raw) if raw else _DEFAULT_MAX_TOKENS
+    except ValueError:
+        v = _DEFAULT_MAX_TOKENS
+    return max(1024, min(v, 16000))
 
 
 @contextmanager
 def use_grok_api_key(api_key: str):
     """
-    Per-job GROK key override.
-    Keeps key scoped to the current execution context/thread.
+    Per-job API key override (name kept for backwards compatibility — the value
+    is now an Anthropic API key, not a GROK key).
     """
-    token = _CTX_GROK_API_KEY.set((api_key or "").strip())
+    token = _CTX_API_KEY.set((api_key or "").strip())
     try:
         yield
     finally:
-        _CTX_GROK_API_KEY.reset(token)
+        _CTX_API_KEY.reset(token)
 
 
 def is_grok_enabled() -> bool:
-    """Return True when a GROK API key is configured."""
+    """Return True when an Anthropic API key is configured."""
     return bool(_get_api_key())
 
 
 def get_last_grok_error() -> str:
-    return _CTX_GROK_LAST_ERROR.get().strip()
+    return _CTX_LAST_ERROR.get().strip()
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -79,18 +104,18 @@ def _extract_pdf_text(path: Path) -> str:
 
 
 def _invoice_text_for_llm(path: Path) -> str:
-    """Cap PDF text size to avoid huge payloads (slow / timeout on xAI Grok)."""
+    """Cap PDF text size to keep payload bounded."""
     raw = _extract_pdf_text(path)
     if not raw.strip():
         return ""
     try:
-        cap = int(os.getenv("GROK_MAX_INVOICE_CHARS", "16000"))
+        cap = int(os.getenv("LLM_MAX_INVOICE_CHARS") or os.getenv("GROK_MAX_INVOICE_CHARS") or "16000")
     except ValueError:
         cap = 16000
     cap = max(4000, min(cap, 100_000))
     if len(raw) <= cap:
         return raw
-    return raw[:cap] + "\n\n[Text truncated for API; raise GROK_MAX_INVOICE_CHARS if needed.]"
+    return raw[:cap] + "\n\n[Text truncated; raise LLM_MAX_INVOICE_CHARS if needed.]"
 
 
 def _parse_llm_json(content: str) -> dict[str, Any]:
@@ -169,150 +194,130 @@ def _build_prompt(filename: str) -> str:
     )
 
 
-def _resolve_llm_base_and_model() -> tuple[str, str]:
-    """
-    xAI Grok: api.x.ai + grok-* models.
-    Groq: api.groq.com + OpenAI-compatible models (keys usually start with gsk_).
-    Override anytime with GROK_BASE_URL / GROK_MODEL (or GROQ_MODEL when using Groq).
-    """
-    api_key = _get_api_key()
-    explicit_base = (os.getenv("GROK_BASE_URL") or "").strip().rstrip("/")
-    explicit_model = (os.getenv("GROK_MODEL") or "").strip()
-    groq_model = (os.getenv("GROQ_MODEL") or "").strip()
-
-    if explicit_base and explicit_model:
-        return explicit_base, explicit_model
-    if _is_groq_key(api_key):
-        base = explicit_base or _DEFAULT_GROQ_BASE_URL
-        model = (
-            explicit_model
-            or groq_model
-            or _DEFAULT_GROQ_MODEL
-        )
-        return base, model
-    base = explicit_base or _DEFAULT_BASE_URL
-    model = explicit_model or _DEFAULT_MODEL
-    return base, model
+_IMAGE_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 
 
-def _call_grok(messages: list[dict[str, Any]]) -> dict[str, Any]:
+def _encode_image_for_anthropic(path: Path) -> tuple[str, str]:
+    """Return (media_type, base64_data). TIFF is converted to PNG via Pillow."""
+    suf = path.suffix.lower()
+    if suf in _IMAGE_MEDIA_TYPES:
+        return _IMAGE_MEDIA_TYPES[suf], base64.b64encode(path.read_bytes()).decode("ascii")
+    if suf in {".tif", ".tiff"}:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            buf = io.BytesIO()
+            im.convert("RGB").save(buf, format="PNG")
+            return "image/png", base64.b64encode(buf.getvalue()).decode("ascii")
+    raise ValueError(f"Unsupported image type: {suf}")
+
+
+def _build_client() -> anthropic.Anthropic:
     api_key = _get_api_key()
     if not api_key:
-        raise RuntimeError("Set GROK_API_KEY or GROQ_API_KEY (or paste key in the upload form)")
-    base, model = _resolve_llm_base_and_model()
-    # xAI Grok can exceed 45s on long docs; short default caused "read operation timed out" → mock fallback.
-    read_sec = _safe_float(os.getenv("GROK_TIMEOUT_SEC"), 180.0)
-    connect_sec = _safe_float(os.getenv("GROK_CONNECT_TIMEOUT_SEC"), 30.0)
-    read_sec = max(60.0, min(read_sec, 600.0))
-    timeout = httpx.Timeout(connect=connect_sec, read=read_sec, write=120.0, pool=30.0)
-
-    payload = {
-        "model": model,
-        "temperature": 0,
-        "messages": messages,
-    }
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    with httpx.Client(timeout=timeout) as client:
-        resp = client.post(f"{base}/chat/completions", headers=headers, json=payload)
-        try:
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            body = (resp.text or "").strip()
-            snippet = body[:400] if body else "<empty response body>"
-            hint = ""
-            if resp.status_code == 403:
-                hint = (
-                    " | Fix: (1) Open https://console.x.ai and add credits/licenses for your team, "
-                    "OR (2) Use Groq instead: set env GROQ_API_KEY to a key starting with gsk_ "
-                    "(or paste it in the upload form) — no x.ai account required."
-                )
-            raise RuntimeError(f"LLM API {resp.status_code}: {snippet}{hint}") from e
-        return resp.json()
+        raise RuntimeError(
+            "Set ANTHROPIC_API_KEY (or paste an Anthropic key in the upload form)."
+        )
+    return anthropic.Anthropic(api_key=api_key)
 
 
-def _call_grok_with_retry(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    """One retry on timeout (xAI can be slow on first token)."""
-    try:
-        return _call_grok(messages)
-    except httpx.TimeoutException:
-        try:
-            return _call_grok(messages)
-        except httpx.TimeoutException as e2:
-            raise RuntimeError(
-                "LLM API timed out. Set env GROK_TIMEOUT_SEC=300 (or higher) and restart the backend."
-            ) from e2
+def _extract_text_from_response(message: anthropic.types.Message) -> str:
+    parts: list[str] = []
+    for block in message.content:
+        if getattr(block, "type", "") == "text":
+            parts.append(block.text)
+    return "".join(parts)
+
+
+def _call_anthropic(
+    *,
+    system: str,
+    user_content: str | list[dict[str, Any]],
+    max_tokens: int | None = None,
+) -> str:
+    """Single Messages API call. Returns the concatenated text from response."""
+    client = _build_client()
+    if isinstance(user_content, str):
+        user_blocks: list[dict[str, Any]] = [{"type": "text", "text": user_content}]
+    else:
+        user_blocks = user_content
+    message = client.messages.create(
+        model=_get_model(),
+        max_tokens=max_tokens or _get_max_tokens(),
+        system=system,
+        messages=[{"role": "user", "content": user_blocks}],
+    )
+    return _extract_text_from_response(message)
 
 
 def invoke_llm_json(*, system_prompt: str, user_prompt: str) -> dict[str, Any]:
     """
-    Shared GROK/Groq JSON call for non-OCR tasks (e.g., validation).
+    Generic JSON-mode LLM call used by stage validation. Returns parsed dict.
     """
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-    out = _call_grok_with_retry(messages)
-    msg = (((out.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
-    return _parse_llm_json(msg)
+    text = _call_anthropic(system=system_prompt, user_content=user_prompt)
+    return _parse_llm_json(text)
 
 
 def extract_invoice_with_grok(path: Path) -> ExtractedInvoice | None:
     """
-    Use GROK for invoice extraction.
-    Returns None when disabled or on any failure, so caller can fallback gracefully.
+    Use Anthropic for invoice extraction. Public name kept for caller compatibility
+    (mock_ocr.py imports this symbol). Returns None on failure so caller can fall
+    back to mock OCR.
     """
     if not is_grok_enabled():
-        _CTX_GROK_LAST_ERROR.set("GROK_API_KEY or GROQ_API_KEY missing")
+        _CTX_LAST_ERROR.set("ANTHROPIC_API_KEY missing")
         return None
 
     try:
         prompt = _build_prompt(path.name)
-        base, model = _resolve_llm_base_and_model()
+        model = _get_model()
         cache_payload = {
-            "v": 3,
-            "base": base,
+            "v": 4,
+            "provider": "anthropic",
             "model": model,
             "name": path.name,
             "suffix": path.suffix.lower(),
             "size": int(path.stat().st_size) if path.exists() else 0,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "",
         }
-        cached = cache_get("grok_extract", cache_payload)
+        cached = cache_get("llm_extract", cache_payload)
         if isinstance(cached, dict):
-            _CTX_GROK_LAST_ERROR.set("")
+            _CTX_LAST_ERROR.set("")
             return _to_invoice(cached, path.name)
+
         suf = path.suffix.lower()
+        system_prompt = "You are a precise invoice extraction engine."
+
         if suf == ".pdf":
             doc_text = _invoice_text_for_llm(path)
             if not doc_text:
+                _CTX_LAST_ERROR.set("PDF produced no extractable text")
                 return None
-            messages = [
-                {"role": "system", "content": "You are a precise invoice extraction engine."},
-                {"role": "user", "content": f"{prompt}\n\nInvoice text:\n{doc_text}"},
-            ]
-        elif suf in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}:
-            b64 = base64.b64encode(path.read_bytes()).decode("ascii")
-            mime = "image/jpeg" if suf in {".jpg", ".jpeg"} else f"image/{suf.lstrip('.')}"
-            messages = [
-                {"role": "system", "content": "You are a precise invoice extraction engine."},
+            user_content: str | list[dict[str, Any]] = f"{prompt}\n\nInvoice text:\n{doc_text}"
+        elif suf in _IMAGE_MEDIA_TYPES or suf in {".tif", ".tiff"}:
+            media_type, b64 = _encode_image_for_anthropic(path)
+            user_content = [
+                {"type": "text", "text": prompt},
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
-                    ],
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": media_type, "data": b64},
                 },
             ]
         else:
+            _CTX_LAST_ERROR.set(f"Unsupported file type: {suf}")
             return None
 
-        out = _call_grok_with_retry(messages)
-        msg = (((out.get("choices") or [{}])[0]).get("message") or {}).get("content") or ""
-        data = _parse_llm_json(msg)
-        cache_set("grok_extract", cache_payload, data)
-        _CTX_GROK_LAST_ERROR.set("")
+        text = _call_anthropic(system=system_prompt, user_content=user_content)
+        data = _parse_llm_json(text)
+        cache_set("llm_extract", cache_payload, data)
+        _CTX_LAST_ERROR.set("")
         return _to_invoice(data, path.name)
     except Exception as e:
-        _CTX_GROK_LAST_ERROR.set(str(e)[:300])
+        _CTX_LAST_ERROR.set(str(e)[:300])
         return None
-
