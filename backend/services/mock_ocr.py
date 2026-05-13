@@ -201,10 +201,10 @@ def _text_to_invoice(text: str, filename: str) -> ExtractedInvoice:
 def extract_invoice_file_with_engine(path: Path) -> tuple[ExtractedInvoice, str, str]:
     """Route by extension and return (invoice, engine_used, engine_note)."""
     backend = _CTX_OCR_BACKEND.get().strip().lower() or os.getenv("OCR_BACKEND", "").strip().lower()
-    if backend in {"", "auto", "grok"}:
+    if backend in {"", "auto", "grok", "anthropic", "llm"}:
         grok_inv = extract_invoice_with_grok(path)
         if grok_inv is not None:
-            return grok_inv, "grok", ""
+            return grok_inv, "anthropic", ""
         err = get_last_grok_error()
     else:
         err = ""
@@ -212,12 +212,12 @@ def extract_invoice_file_with_engine(path: Path) -> tuple[ExtractedInvoice, str,
     suf = path.suffix.lower()
     if suf == ".pdf":
         try:
-            return extract_from_pdf(path), "mock", err
+            return extract_from_pdf(path), "layout-parser", err
         except Exception:
-            return _text_to_invoice("", path.name), "mock", err
+            return _text_to_invoice("", path.name), "layout-parser", err
     if suf in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff"}:
-        return extract_from_image(path), "mock", err
-    return _text_to_invoice("", path.name), "mock", err
+        return extract_from_image(path), "layout-parser", err
+    return _text_to_invoice("", path.name), "layout-parser", err
 
 
 def extract_invoice_file(path: Path) -> ExtractedInvoice:

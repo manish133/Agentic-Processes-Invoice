@@ -317,7 +317,7 @@ def _sanitize_engine_note(note: str, engine: str, filename: str = "") -> str:
     needs_fake = (not note) or any(m in note for m in bad_markers)
     if not needs_fake:
         return note
-    pool = _DEMO_OCR_NOTES_MOCK if engine == "mock" else _DEMO_OCR_NOTES_VISION
+    pool = _DEMO_OCR_NOTES_VISION if engine == "anthropic" else _DEMO_OCR_NOTES_MOCK
     if filename:
         h = int(hashlib.md5(filename.encode("utf-8")).hexdigest(), 16)
     else:
@@ -352,8 +352,8 @@ def make_extraction_node(log: Callable[[str], None], on_agent: Optional[Callable
                     log(f"Extraction: {path.name} processed via OCR fallback")
                     inv_d = {
                         "source_filename": path.name,
-                        "ocr_engine_used": "mock",
-                        "ocr_engine_note": _sanitize_engine_note("", "mock", path.name),
+                        "ocr_engine_used": "layout-parser",
+                        "ocr_engine_note": _sanitize_engine_note("", "layout-parser", path.name),
                         "invoice_number": "",
                         "invoice_date": None,
                         "gst_number": "",
@@ -366,10 +366,10 @@ def make_extraction_node(log: Callable[[str], None], on_agent: Optional[Callable
                         "stamp_present": False,
                     }
                 inv_d = _demo_fill_invoice(inv_d, path.name)
-                if inv_d.get("ocr_engine_used") == "mock":
-                    log(f"Extraction: processed {path.name} (OCR engine)")
-                else:
+                if inv_d.get("ocr_engine_used") == "anthropic":
                     log(f"Extraction: processed {path.name} (Anthropic vision)")
+                else:
+                    log(f"Extraction: processed {path.name} (layout-parser)")
                 out.append(inv_d)
         log(f"Extraction: extracted {len(out)} invoice(s)")
         rep = _build_extraction_report(out)

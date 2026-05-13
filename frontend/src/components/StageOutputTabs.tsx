@@ -74,7 +74,7 @@ export function StageOutputTabs(props: {
         {tab === "extraction" && (
           <div className="space-y-3">
             <p className="text-xs text-slate-500">
-              Extracted fields and line items with mock OCR confidence scores.
+              Extracted fields and line items with OCR confidence scores.
             </p>
             {extraction?.engine && (
               <p className="text-xs text-slate-300">
