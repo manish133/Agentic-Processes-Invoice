@@ -4,6 +4,8 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "rewrites": [
+    { "source": "/api/(.*)", "destination": "https://qsr-invoice-api.onrender.com/$1" },
+    { "source": "/ws/(.*)", "destination": "https://qsr-invoice-api.onrender.com/ws/$1" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
